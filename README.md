@@ -1,11 +1,3 @@
-## This was merged into xelA, only kept as public reference
-
-<p align="center">
-  <img alt="birthday.py" src="https://i.alexflipnote.dev/Q6fdPJa.png" width="750px">
-</p>
-
-Do you need more help? Visit my server here: **https://discord.gg/AlexFlipnote**
-
 ## Requirements
 - Python 3.6 and up - https://www.python.org/downloads/
 - git - https://git-scm.com/download/
