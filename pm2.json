@@ -1,10 +1,20 @@
 {
   "apps": [
     {
-      "name":"Birthday.py",
-      "script":"index.py",
-      "interpreter" : "python3.7",
-      "interpreter_args": "-u"
+      "name": "birthday-app",
+      "script": "index.py",
+      "interpreter": "python3",
+      "interpreter_args": "-u",
+      "watch": false,
+      "autorestart": true,
+      "max_restarts": 5,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "error_file": "logs/error.log",
+      "out_file": "logs/output.log",
+      "merge_logs": true,
+      "log_date_format": "YYYY-MM-DD HH:mm Z"
     }
   ]
 }
