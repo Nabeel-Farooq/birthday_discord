@@ -1,77 +1,199 @@
 import sqlite3
 
 from collections import OrderedDict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
-def dict_factory(cursor, row):
-    d = {}
-    for index, col in enumerate(cursor.description):
-        d[col[0]] = row[index]
-    return d
+DATABASE_PATH = Path("storage.db")
+
+
+def dict_factory(
+    cursor: sqlite3.Cursor,
+    row: tuple
+) -> Dict[str, Any]:
+    """
+    Convert SQLite rows into dictionaries.
+    """
+
+    return {
+        column[0]: row[index]
+        for index, column in enumerate(cursor.description)
+    }
 
 
 class Database:
-    def __init__(self):
+    """
+    SQLite database helper class.
+    """
+
+    def __init__(
+        self,
+        database_path: Path = DATABASE_PATH
+    ):
         self.conn = sqlite3.connect(
-            "storage.db", isolation_level=None, detect_types=sqlite3.PARSE_DECLTYPES
+            database_path,
+            isolation_level=None,
+            detect_types=sqlite3.PARSE_DECLTYPES,
         )
+
         self.conn.row_factory = dict_factory
-        self.db = self.conn.cursor()
 
-    def execute(self, sql: str, prepared: tuple = (), commit: bool = True):
-        """ Execute SQL command with args for 'Prepared Statements' """
+        self.cursor = self.conn.cursor()
+
+    def execute(
+        self,
+        sql: str,
+        prepared: tuple = (),
+    ) -> str:
+        """
+        Execute SQL query.
+
+        Args:
+            sql:
+                SQL statement.
+
+            prepared:
+                Prepared statement values.
+
+        Returns:
+            str:
+                Query execution status.
+        """
+
         try:
-            data = self.db.execute(sql, prepared)
-        except Exception as e:
-            return f"{type(e).__name__}: {e}"
+            result = self.cursor.execute(
+                sql,
+                prepared,
+            )
 
-        status_word = sql.split(' ')[0].upper()
-        status_code = data.rowcount if data.rowcount > 0 else 0
-        if status_word == "SELECT":
-            status_code = len(data.fetchall())
+            statement = sql.strip().split()[0].upper()
 
-        return f"{status_word} {status_code}"
+            if statement == "SELECT":
+                affected = len(result.fetchall())
+            else:
+                affected = max(result.rowcount, 0)
 
-    def fetch(self, sql: str, prepared: tuple = ()):
-        """ Fetch DB data with args for 'Prepared Statements' """
-        data = self.db.execute(sql, prepared).fetchall()
-        return data
+            return f"{statement} {affected}"
 
-    def fetchrow(self, sql: str, prepared: tuple = ()):
-        """ Fetch DB row (one row only) with args for 'Prepared Statements' """
-        data = self.db.execute(sql, prepared).fetchone()
-        return data
+        except sqlite3.Error as error:
+            return (
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+    def fetch(
+        self,
+        sql: str,
+        prepared: tuple = (),
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all rows from query.
+        """
+
+        return self.cursor.execute(
+            sql,
+            prepared,
+        ).fetchall()
+
+    def fetchrow(
+        self,
+        sql: str,
+        prepared: tuple = (),
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a single row from query.
+        """
+
+        return self.cursor.execute(
+            sql,
+            prepared,
+        ).fetchone()
+
+    def close(self) -> None:
+        """
+        Close database connection.
+        """
+
+        self.cursor.close()
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc_val,
+        exc_tb,
+    ):
+        self.close()
 
 
 class Column:
-    def __init__(self, column_type: str, primary_key: bool = False, index: bool = False,
-                 nullable: bool = True, unique: bool = False, name: str = None, default=None):
+    """
+    Database column definition.
+    """
+
+    def __init__(
+        self,
+        column_type: str,
+        *,
+        primary_key: bool = False,
+        index: bool = False,
+        nullable: bool = True,
+        unique: bool = False,
+        name: Optional[str] = None,
+        default: Any = None,
+    ):
         self.column_type = column_type.upper()
+
         self.primary_key = primary_key
+        self.index = index
         self.nullable = nullable
         self.unique = unique
-        self.index = index
-        self.default = default
+
         self.name = name
+        self.default = default
 
-        if sum(map(bool, (unique, primary_key, default is not None))) > 1:
-            raise SyntaxError("'unique', 'primary_key', and 'default' are mutually exclusive.")
+        mutually_exclusive = (
+            unique,
+            primary_key,
+            default is not None,
+        )
 
-    def _create_table(self):
-        builder = []
-        builder.append(f"'{self.name}' {self.column_type}")
+        if sum(map(bool, mutually_exclusive)) > 1:
+            raise SyntaxError(
+                "'unique', 'primary_key', "
+                "and 'default' are mutually exclusive."
+            )
 
-        default = self.default
-        if default:
+    def build(self) -> str:
+        """
+        Generate SQL column definition.
+        """
+
+        builder = [
+            f"'{self.name}' {self.column_type}"
+        ]
+
+        if self.default is not None:
             builder.append("DEFAULT")
-            if isinstance(default, str):
-                builder.append(f"'{default}'")
-            elif isinstance(default, bool):
-                builder.append(str(default).upper())
+
+            if isinstance(self.default, str):
+                builder.append(f"'{self.default}'")
+
+            elif isinstance(self.default, bool):
+                builder.append(
+                    str(self.default).upper()
+                )
+
             else:
-                builder.append(f"({default})")
+                builder.append(str(self.default))
+
         elif self.unique:
             builder.append("UNIQUE")
+
         if not self.nullable:
             builder.append("NOT NULL")
 
@@ -79,75 +201,152 @@ class Column:
 
 
 class TableMeta(type):
+    """
+    Metaclass for automatic column collection.
+    """
+
     @classmethod
-    def __prepare__(cls, name, bases, **kwargs):
+    def __prepare__(
+        cls,
+        name,
+        bases,
+        **kwargs
+    ):
         return OrderedDict()
 
-    def __new__(cls, name, parents, dct, **kwargs):
+    def __new__(
+        cls,
+        name,
+        bases,
+        namespace,
+        **kwargs
+    ):
+        table_name = kwargs.get(
+            "table_name",
+            name.lower(),
+        )
+
+        namespace["__tablename__"] = table_name
+
         columns = []
 
-        try:
-            table_name = kwargs["table_name"]
-        except KeyError:
-            table_name = name.lower()
+        for attribute, value in namespace.items():
 
-        dct["__tablename__"] = table_name
-
-        for elem, value in dct.items():
             if isinstance(value, Column):
-                if not value.name:
-                    value.name = elem
+
+                if value.name is None:
+                    value.name = attribute
 
                 if value.index:
-                    value.index_name = f"{table_name}_{value.name}_idx"
+                    value.index_name = (
+                        f"{table_name}_{value.name}_idx"
+                    )
 
                 columns.append(value)
 
-        dct["columns"] = columns
-        return super().__new__(cls, name, parents, dct)
+        namespace["columns"] = columns
 
-    def __init__(self, name, parents, dct, **kwargs):
-        super().__init__(name, parents, dct)
+        return super().__new__(
+            cls,
+            name,
+            bases,
+            namespace,
+        )
 
 
 class Table(metaclass=TableMeta):
+    """
+    Base database table model.
+    """
+
     @classmethod
-    def create_table(cls, *, exists_ok: bool = True):
-        """ Generate a CREATE TABLE command """
+    def create_table(
+        cls,
+        *,
+        exists_ok: bool = True,
+    ) -> str:
+        """
+        Generate CREATE TABLE SQL statement.
+        """
+
         statements = []
+
         builder = ["CREATE TABLE"]
 
         if exists_ok:
             builder.append("IF NOT EXISTS")
 
         builder.append(cls.__tablename__)
-        column_creations = []
+
+        column_definitions = []
         primary_keys = []
 
-        for col in cls.columns:
-            column_creations.append(col._create_table())
-            if col.primary_key:
-                primary_keys.append(col.name)
+        for column in cls.columns:
 
-        column_creations.append("PRIMARY KEY (%s)" % ", ".join(primary_keys))
-        builder.append("(%s)" % ", ".join(column_creations))
-        statements.append(" ".join(builder) + ";")
+            column_definitions.append(
+                column.build()
+            )
+
+            if column.primary_key:
+                primary_keys.append(column.name)
+
+        if primary_keys:
+            column_definitions.append(
+                (
+                    "PRIMARY KEY "
+                    f"({', '.join(primary_keys)})"
+                )
+            )
+
+        builder.append(
+            f"({', '.join(column_definitions)})"
+        )
+
+        statements.append(
+            " ".join(builder) + ";"
+        )
 
         for column in cls.columns:
+
             if column.index:
-                fmt = "CREATE INDEX IF NOT EXISTS {1.index_name} ON {0} ({1.name});".format(cls.__tablename__, column)
-                statements.append(fmt)
+
+                statements.append(
+                    (
+                        "CREATE INDEX IF NOT EXISTS "
+                        f"{column.index_name} "
+                        f"ON {cls.__tablename__} "
+                        f"({column.name});"
+                    )
+                )
 
         return "\n".join(statements)
 
     @classmethod
-    def create(cls, *, verbose: bool = False):
-        sql = cls.create_table(exists_ok=True)
+    def create(
+        cls,
+        *,
+        verbose: bool = False,
+    ) -> bool:
+        """
+        Create table in database.
+        """
+
+        sql = cls.create_table()
+
         if verbose:
             print(sql)
-        Database().execute(sql)
-        return True
+
+        with Database() as database:
+            result = database.execute(sql)
+
+        return not result.startswith(
+            "OperationalError"
+        )
 
     @classmethod
     def all_tables(cls):
+        """
+        Return all registered table models.
+        """
+
         return cls.__subclasses__()
